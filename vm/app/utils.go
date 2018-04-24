@@ -66,6 +66,7 @@ func (app *EthermintApplication) CollectTx(tx *types.Transaction) {
 }
 
 func (app *EthermintApplication) GetNonce(address common.Address) (uint64) {
-	currentState := app.checkTxState
-	return currentState.GetNonce(address)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return app.checkTxState.GetNonce(address)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -55,6 +56,8 @@ type EthermintApplication struct {
 
 	// record count of failed CheckTx of each from account; used to feed in the nonce check
 	checkFailedCount map[common.Address]uint64
+
+	mu           sync.RWMutex
 }
 
 // NewEthermintApplication creates a fully initialised instance of EthermintApplication
@@ -194,6 +197,8 @@ func (app *EthermintApplication) EndBlock(endBlock abciTypes.RequestEndBlock) ab
 // Commit commits the block and returns a hash of the current state
 // #stable - 0.4.0
 func (app *EthermintApplication) Commit() abciTypes.ResponseCommit {
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	app.logger.Debug("Commit") // nolint: errcheck
 	blockHash, err := app.backend.Commit(app.Receiver())
 	if err != nil {
@@ -379,6 +384,8 @@ func (app *EthermintApplication) validateTx(tx *ethTypes.Transaction) abciTypes.
 	if to := tx.To(); to != nil {
 		currentState.AddBalance(*to, tx.Value())
 	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	currentState.SetNonce(from, nonce+1)
 
 	return abciTypes.ResponseCheckTx{Code: abciTypes.CodeTypeOK}

@@ -218,11 +218,15 @@ func (app *BaseApp) InitState(module, key, value string) error {
 
 // Query - ABCI
 func (app *BaseApp) Query(reqQuery abci.RequestQuery) (resQuery abci.ResponseQuery) {
-	fmt.Println("In BaseApp.Query: ", reqQuery.Path)
-
 	if reqQuery.Path == "/nonce" {
+		if len(reqQuery.Data) == 0 {
+			resQuery.Log = "Query cannot be zero length"
+			resQuery.Code = errors.CodeTypeEncodingErr
+			return
+		}
+
 		resQuery.Log = ""
-		resQuery.Code = errors.CodeTypeEncodingErr
+		resQuery.Code = 0
 		resQuery.Value =  wire.BinaryBytes(app.EthApp.GetNonce(common.BytesToAddress(reqQuery.Data)))
 		return
 	} else {
