@@ -383,3 +383,4 @@ func (app *EthermintApplication) validateTx(tx *ethTypes.Transaction) abciTypes.
 
 	return abciTypes.ResponseCheckTx{Code: abciTypes.CodeTypeOK}
 }
+

@@ -20,6 +20,7 @@ import (
 	ttypes	"github.com/CyberMiles/travis/types"
 	"github.com/CyberMiles/travis/modules"
 	"github.com/ethereum/go-ethereum/eth"
+	"github.com/tendermint/go-wire"
 )
 
 // BaseApp - The ABCI application
@@ -213,6 +214,20 @@ func (app *BaseApp) InitState(module, key, value string) error {
 		logger.Error("Invalid genesis option", "err", err)
 	}
 	return err
+}
+
+// Query - ABCI
+func (app *BaseApp) Query(reqQuery abci.RequestQuery) (resQuery abci.ResponseQuery) {
+	fmt.Println("In BaseApp.Query: ", reqQuery.Path)
+
+	if reqQuery.Path == "/nonce" {
+		resQuery.Log = ""
+		resQuery.Code = errors.CodeTypeEncodingErr
+		resQuery.Value =  wire.BinaryBytes(app.EthApp.GetNonce(common.BytesToAddress(reqQuery.Data)))
+		return
+	} else {
+		return app.StoreApp.Query(reqQuery)
+	}
 }
 
 // rlp decode an ethereum transaction

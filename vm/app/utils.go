@@ -64,3 +64,8 @@ func (app *EthermintApplication) CollectTx(tx *types.Transaction) {
 		app.strategy.CollectTx(tx)
 	}
 }
+
+func (app *EthermintApplication) GetNonce(address common.Address) (uint64) {
+	currentState := app.checkTxState
+	return currentState.GetNonce(address)
+}
