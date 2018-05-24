@@ -5,6 +5,7 @@ branches:
   - master
   - develop
   - tmup
+  - lity
 
 services:
   - docker
