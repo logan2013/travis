@@ -29,7 +29,7 @@ IMAGE := ${NAME}:${TAG}
 LATEST := ${NAME}:latest
 
 docker_image:
-	@docker build -t $(IMAGE) .
+	@docker build -t ${IMAGE} --build-arg branch=${BRANCH} .
 	@docker tag ${IMAGE} ${LATEST}
 
 push_branch_image:
