@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tendermint/tmlibs/cli"
 	"path"
+
 	"github.com/CyberMiles/travis/types"
 )
 
@@ -23,15 +24,15 @@ func getDb() *sql.DB {
 func GetCandidateByAddress(address common.Address) *Candidate {
 	db := getDb()
 	defer db.Close()
-	stmt, err := db.Prepare("select pub_key, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, created_at, updated_at from candidates where address = ?")
+	stmt, err := db.Prepare("select pub_key, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, block_height, created_at, updated_at from candidates where address = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
 	var pubKey, createdAt, updatedAt, shares, maxShares, website, location, details, verified, active, compRate string
-	var votingPower int64
-	err = stmt.QueryRow(address.String()).Scan(&pubKey, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &createdAt, &updatedAt)
+	var votingPower, blockHeight int64
+	err = stmt.QueryRow(address.String()).Scan(&pubKey, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &blockHeight, &createdAt, &updatedAt)
 
 	switch {
 	case err == sql.ErrNoRows:
@@ -58,21 +59,22 @@ func GetCandidateByAddress(address common.Address) *Candidate {
 		UpdatedAt:    updatedAt,
 		Verified:     verified,
 		Active:       active,
+		BlockHeight:  blockHeight,
 	}
 }
 
 func GetCandidateByPubKey(pubKey string) *Candidate {
 	db := getDb()
 	defer db.Close()
-	stmt, err := db.Prepare("select address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, created_at, updated_at from candidates where pub_key = ?")
+	stmt, err := db.Prepare("select address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, block_height, created_at, updated_at from candidates where pub_key = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
 	var address, createdAt, updatedAt, shares, maxShares, website, location, details, verified, active, compRate string
-	var votingPower int64
-	err = stmt.QueryRow(pubKey).Scan(&address, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &createdAt, &updatedAt)
+	var votingPower, blockHeight int64
+	err = stmt.QueryRow(pubKey).Scan(&address, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &blockHeight, &createdAt, &updatedAt)
 
 	switch {
 	case err == sql.ErrNoRows:
@@ -99,6 +101,7 @@ func GetCandidateByPubKey(pubKey string) *Candidate {
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 		Active:       active,
+		BlockHeight:  blockHeight,
 	}
 }
 
@@ -106,7 +109,7 @@ func GetCandidates() (candidates Candidates) {
 	db := getDb()
 	defer db.Close()
 
-	rows, err := db.Query("select pub_key, address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, created_at, updated_at from candidates where active=?", "Y")
+	rows, err := db.Query("select pub_key, address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, block_height, created_at, updated_at from candidates")
 	if err != nil {
 		panic(err)
 	}
@@ -114,8 +117,8 @@ func GetCandidates() (candidates Candidates) {
 
 	for rows.Next() {
 		var pubKey, address, createdAt, updatedAt, shares, maxShares, website, location, details, verified, active, compRate string
-		var votingPower int64
-		err = rows.Scan(&pubKey, &address, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &createdAt, &updatedAt)
+		var votingPower, blockHeight int64
+		err = rows.Scan(&pubKey, &address, &shares, &votingPower, &maxShares, &compRate, &website, &location, &details, &verified, &active, &blockHeight, &createdAt, &updatedAt)
 		if err != nil {
 			panic(err)
 		}
@@ -137,6 +140,7 @@ func GetCandidates() (candidates Candidates) {
 			CreatedAt:    createdAt,
 			UpdatedAt:    updatedAt,
 			Active:       active,
+			BlockHeight:  blockHeight,
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -158,7 +162,7 @@ func SaveCandidate(candidate *Candidate) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("insert into candidates(pub_key, address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, created_at, updated_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("insert into candidates(pub_key, address, shares, voting_power, max_shares, comp_rate, website, location, details, verified, active, hash, block_height, created_at, updated_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		panic(err)
 	}
@@ -176,6 +180,8 @@ func SaveCandidate(candidate *Candidate) {
 		candidate.Description.Details,
 		candidate.Verified,
 		candidate.Active,
+		common.Bytes2Hex(candidate.Hash()),
+		candidate.BlockHeight,
 		candidate.CreatedAt,
 		candidate.UpdatedAt,
 	)
@@ -193,7 +199,7 @@ func updateCandidate(candidate *Candidate) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("update candidates set address = ?, shares = ?, voting_power = ?, max_shares = ?, comp_rate = ?, website = ?, location = ?, details = ?, verified = ?, active = ?, updated_at = ? where pub_key = ?")
+	stmt, err := tx.Prepare("update candidates set address = ?, shares = ?, voting_power = ?, max_shares = ?, comp_rate = ?, website = ?, location = ?, details = ?, verified = ?, active = ?, hash = ?,  updated_at = ? where pub_key = ?")
 	if err != nil {
 		panic(err)
 	}
@@ -210,6 +216,7 @@ func updateCandidate(candidate *Candidate) {
 		candidate.Description.Details,
 		candidate.Verified,
 		candidate.Active,
+		common.Bytes2Hex(candidate.Hash()),
 		candidate.UpdatedAt,
 		types.PubKeyString(candidate.PubKey),
 	)
@@ -333,13 +340,13 @@ func SaveDelegation(d *Delegation) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("insert into delegations(delegator_address, pub_key, delegate_amount, award_amount, withdraw_amount, slash_amount, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("insert into delegations(delegator_address, pub_key, delegate_amount, award_amount, withdraw_amount, slash_amount, hash, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(d.DelegatorAddress.String(), types.PubKeyString(d.PubKey), d.DelegateAmount, d.AwardAmount, d.WithdrawAmount, d.SlashAmount, d.CreatedAt, d.UpdatedAt)
+	_, err = stmt.Exec(d.DelegatorAddress.String(), types.PubKeyString(d.PubKey), d.DelegateAmount, d.AwardAmount, d.WithdrawAmount, d.SlashAmount, common.Bytes2Hex(d.Hash()), d.CreatedAt, d.UpdatedAt)
 	if err != nil {
 		panic(err)
 	}
@@ -375,13 +382,13 @@ func UpdateDelegation(d *Delegation) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("update delegations set delegate_amount = ?, award_amount =?, withdraw_amount = ?, slash_amount = ?, updated_at = ? where delegator_address = ? and pub_key = ?")
+	stmt, err := tx.Prepare("update delegations set delegate_amount = ?, award_amount =?, withdraw_amount = ?, slash_amount = ?, hash = ?, updated_at = ? where delegator_address = ? and pub_key = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(d.DelegateAmount, d.AwardAmount, d.WithdrawAmount, d.SlashAmount, d.UpdatedAt, d.DelegatorAddress.String(), types.PubKeyString(d.PubKey))
+	_, err = stmt.Exec(d.DelegateAmount, d.AwardAmount, d.WithdrawAmount, d.SlashAmount, common.Bytes2Hex(d.Hash()), d.UpdatedAt, d.DelegatorAddress.String(), types.PubKeyString(d.PubKey))
 	if err != nil {
 		panic(err)
 	}
@@ -554,7 +561,7 @@ func savePunishHistory(punishHistory *PunishHistory) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("insert into punish_history(pub_key, deduction_ratio, deduction, reason, created_at) values(?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("insert into punish_history(pub_key, slashing_ratio, slash_amount, reason, created_at) values(?, ?, ?, ?, ?)")
 	if err != nil {
 		panic(err)
 	}
@@ -562,10 +569,112 @@ func savePunishHistory(punishHistory *PunishHistory) {
 
 	_, err = stmt.Exec(
 		types.PubKeyString(punishHistory.PubKey),
-		punishHistory.DeductionRatio,
-		punishHistory.Deduction.String(),
+		punishHistory.SlashingRatio,
+		punishHistory.SlashAmount.String(),
 		punishHistory.Reason,
 		punishHistory.CreatedAt,
+	)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func saveUnstakeRequest(req *UnstakeRequest) {
+	db := getDb()
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		panic(err)
+	}
+	defer tx.Commit()
+
+	stmt, err := tx.Prepare("insert into unstake_requests(id, delegator_address, pub_key, initiated_block_height, performed_block_height, amount, state, created_at, updated_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		panic(err)
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(
+		req.Id,
+		req.DelegatorAddress.String(),
+		types.PubKeyString(req.PubKey),
+		req.InitiatedBlockHeight,
+		req.PerformedBlockHeight,
+		req.Amount,
+		req.State,
+		req.CreatedAt,
+		req.UpdatedAt,
+	)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func GetUnstakeRequests(height int64) (reqs []*UnstakeRequest) {
+	db := getDb()
+	defer db.Close()
+
+	rows, err := db.Query("select id, delegator_address, pub_key, initiated_block_height, performed_block_height, amount, state, created_at, updated_at from unstake_requests where state = ? and performed_block_height <= ?", "PENDING", height)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, delegatorAddress, pubKey, state, amount, createdAt, updatedAt string
+		var initiatedBlockHeight, performedBlockHeight int64
+		err = rows.Scan(&id, &delegatorAddress, &pubKey, &initiatedBlockHeight, &performedBlockHeight, &amount, &state, &createdAt, &updatedAt)
+		if err != nil {
+			panic(err)
+		}
+
+		pk, _ := types.GetPubKey(pubKey)
+		req := &UnstakeRequest{
+			Id:                   id,
+			DelegatorAddress:     common.HexToAddress(delegatorAddress),
+			PubKey:               pk,
+			InitiatedBlockHeight: initiatedBlockHeight,
+			PerformedBlockHeight: performedBlockHeight,
+			State:                state,
+			Amount:               amount,
+			CreatedAt:            createdAt,
+			UpdatedAt:            updatedAt,
+		}
+		reqs = append(reqs, req)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		panic(err)
+	}
+
+	return
+}
+
+func updateUnstakeRequest(req *UnstakeRequest) {
+	db := getDb()
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		panic(err)
+	}
+	defer tx.Commit()
+
+	stmt, err := tx.Prepare("update unstake_requests set delegator_address = ?, pub_key = ?, initiated_block_height = ?, performed_block_height = ?, amount = ?, state = ?, updated_at = ? where id = ?")
+	if err != nil {
+		panic(err)
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(
+		req.DelegatorAddress.String(),
+		types.PubKeyString(req.PubKey),
+		req.InitiatedBlockHeight,
+		req.PerformedBlockHeight,
+		req.Amount,
+		req.State,
+		req.UpdatedAt,
+		req.Id,
 	)
 	if err != nil {
 		panic(err)

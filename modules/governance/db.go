@@ -30,13 +30,13 @@ func SaveProposal(pp *Proposal) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("insert into governance_proposal(id, proposer, block_height, from_address, to_address, amount, reason, expire_block_height, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("insert into governance_proposal(id, proposer, block_height, from_address, to_address, amount, reason, expire_block_height, hash, created_at) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(pp.Id, pp.Proposer.String(), pp.BlockHeight, pp.From.String(), pp.To.String(), pp.Amount, pp.Reason, pp.ExpireBlockHeight, pp.CreatedAt)
+	_, err = stmt.Exec(pp.Id, pp.Proposer.String(), pp.BlockHeight, pp.From.String(), pp.To.String(), pp.Amount, pp.Reason, pp.ExpireBlockHeight, common.Bytes2Hex(pp.Hash()), pp.CreatedAt)
 	if err != nil {
 		fmt.Println(err)
 		panic(err)
@@ -47,15 +47,15 @@ func GetProposalById(pid string) *Proposal {
 	db := getDb()
 	defer db.Close()
 
-	stmt, err := db.Prepare("select proposer, block_height, from_address, to_address, amount, reason, expire_block_height, created_at, result, result_msg, result_block_height, result_at from governance_proposal where id = ?")
+	stmt, err := db.Prepare("select proposer, block_height, from_address, to_address, amount, reason, expire_block_height, hash, created_at, result, result_msg, result_block_height, result_at from governance_proposal where id = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	var proposer, fromAddr, toAddr, amount, reason, createdAt, result, resultMsg, resultAt string
+	var proposer, fromAddr, toAddr, amount, reason, createdAt, result, resultMsg, resultAt, hash string
 	var blockHeight, expireBlockHeight, resultBlockHeight uint64
-	err = stmt.QueryRow(pid).Scan(&proposer, &blockHeight, &fromAddr, &toAddr, &amount, &reason, &expireBlockHeight, &createdAt, &result, &resultMsg, &resultBlockHeight, &resultAt)
+	err = stmt.QueryRow(pid).Scan(&proposer, &blockHeight, &fromAddr, &toAddr, &amount, &reason, &expireBlockHeight, &hash, &createdAt, &result, &resultMsg, &resultBlockHeight, &resultAt)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil
@@ -85,6 +85,11 @@ func GetProposalById(pid string) *Proposal {
 }
 
 func UpdateProposalResult(pid, result, msg string, blockHeight uint64, resultAt string) {
+	p := GetProposalById(pid)
+	if p == nil {
+		return
+	}
+
 	db := getDb()
 	defer db.Close()
 	tx, err := db.Begin()
@@ -93,13 +98,18 @@ func UpdateProposalResult(pid, result, msg string, blockHeight uint64, resultAt 
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("update governance_proposal set result = ?, result_msg = ?, result_block_height = ?, result_at = ? where id = ?")
+	stmt, err := tx.Prepare("update governance_proposal set result = ?, result_msg = ?, result_block_height = ?, result_at = ?, hash = ? where id = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(result, msg, blockHeight, resultAt, pid)
+	p.Result = result
+	p.ResultMsg = msg
+	p.ResultBlockHeight = blockHeight
+	p.ResultAt = resultAt
+
+	_, err = stmt.Exec(result, msg, blockHeight, resultAt, common.Bytes2Hex(p.Hash()), pid)
 	if err != nil {
 		fmt.Println(err)
 		panic(err)
@@ -110,17 +120,17 @@ func GetProposals() (proposals []*Proposal) {
 	db := getDb()
 	defer db.Close()
 
-	rows, err := db.Query("select id, proposer, block_height, from_address, to_address, amount, reason, expire_block_height, created_at, result, result_msg, result_block_height, result_at from governance_proposal")
+	rows, err := db.Query("select id, proposer, block_height, from_address, to_address, amount, reason, expire_block_height, hash, created_at, result, result_msg, result_block_height, result_at from governance_proposal")
 	if err != nil {
 		panic(err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, proposer, fromAddr, toAddr, amount, reason, createdAt, result, resultMsg, resultAt string
+		var id, proposer, fromAddr, toAddr, amount, reason, createdAt, result, resultMsg, resultAt, hash string
 		var blockHeight, expireBlockHeight, resultBlockHeight uint64
 
-		err = rows.Scan(&id, &proposer, &blockHeight, &fromAddr, &toAddr, &amount, &reason, &expireBlockHeight, &createdAt, &result, &resultMsg, &resultBlockHeight, &resultAt)
+		err = rows.Scan(&id, &proposer, &blockHeight, &fromAddr, &toAddr, &amount, &reason, &expireBlockHeight, &hash, &createdAt, &result, &resultMsg, &resultBlockHeight, &resultAt)
 		if err != nil {
 			panic(err)
 		}
@@ -201,13 +211,13 @@ func SaveVote(vote *Vote) {
 	}
 	defer tx.Commit()
 
-	stmt, err := tx.Prepare("insert into governance_vote(proposal_id, voter, block_height, answer, created_at) values(?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("insert into governance_vote(proposal_id, voter, block_height, answer, hash, created_at) values(?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(vote.ProposalId, vote.Voter.String(), vote.BlockHeight, vote.Answer, vote.CreatedAt)
+	_, err = stmt.Exec(vote.ProposalId, vote.Voter.String(), vote.BlockHeight, vote.Answer, common.Bytes2Hex(vote.Hash()), vote.CreatedAt)
 	if err != nil {
 		fmt.Println(err)
 		panic(err)
@@ -218,15 +228,15 @@ func GetVoteByPidAndVoter(pid string, voter string) *Vote {
 	db := getDb()
 	defer db.Close()
 
-	stmt, err := db.Prepare("select answer, block_height, created_at from governance_vote where proposal_id = ? and voter = ?")
+	stmt, err := db.Prepare("select answer, block_height, hash, created_at from governance_vote where proposal_id = ? and voter = ?")
 	if err != nil {
 		panic(err)
 	}
 	defer stmt.Close()
 
-	var answer, createdAt string
+	var answer, createdAt, hash string
 	var blockHeight uint64
-	err = stmt.QueryRow(pid, voter).Scan(&answer, &blockHeight, &createdAt)
+	err = stmt.QueryRow(pid, voter).Scan(&answer, &blockHeight, &hash, &createdAt)
 	switch {
 	case err == sql.ErrNoRows:
 		return nil
@@ -247,7 +257,7 @@ func GetVotesByPid(pid string) (votes []*Vote) {
 	db := getDb()
 	defer db.Close()
 
-	stmt, err := db.Prepare("select voter, answer, block_height, created_at from governance_vote where proposal_id = ?")
+	stmt, err := db.Prepare("select voter, answer, block_height, hash, created_at from governance_vote where proposal_id = ?")
 	if err != nil {
 		panic(err)
 	}
@@ -260,9 +270,9 @@ func GetVotesByPid(pid string) (votes []*Vote) {
 	}
 
 	for rows.Next() {
-		var voter, answer, createdAt string
+		var voter, answer, createdAt, hash string
 		var blockHeight uint64
-		err = rows.Scan(&voter, &answer, &blockHeight, &createdAt)
+		err = rows.Scan(&voter, &answer, &blockHeight, &hash, &createdAt)
 		if err != nil {
 			panic(err)
 		}

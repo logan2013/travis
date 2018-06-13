@@ -13,10 +13,12 @@ import (
 	"github.com/ethereum/go-ethereum/eth"
 	abci "github.com/tendermint/abci/types"
 
+	"bytes"
 	"github.com/CyberMiles/travis/modules/governance"
 	"github.com/CyberMiles/travis/modules/stake"
 	ttypes "github.com/CyberMiles/travis/types"
 	"github.com/CyberMiles/travis/utils"
+	"golang.org/x/crypto/ripemd160"
 )
 
 // BaseApp - The ABCI application
@@ -25,8 +27,9 @@ type BaseApp struct {
 	EthApp              *EthermintApplication
 	checkedTx           map[common.Hash]*types.Transaction
 	ethereum            *eth.Ethereum
-	AbsentValidators    []int32
+	AbsentValidators    *stake.AbsentValidators
 	ByzantineValidators []abci.Evidence
+	LastValidators      []stake.Validator
 }
 
 const (
@@ -52,10 +55,11 @@ func NewBaseApp(store *StoreApp, ethApp *EthermintApplication, ethereum *eth.Eth
 	}
 
 	app := &BaseApp{
-		StoreApp:  store,
-		EthApp:    ethApp,
-		checkedTx: make(map[common.Hash]*types.Transaction),
-		ethereum:  ethereum,
+		StoreApp:         store,
+		EthApp:           ethApp,
+		checkedTx:        make(map[common.Hash]*types.Transaction),
+		ethereum:         ethereum,
+		AbsentValidators: stake.NewAbsentValidators(),
 	}
 
 	return app, nil
@@ -66,6 +70,23 @@ func (app *StoreApp) InitChain(req abci.RequestInitChain) (res abci.ResponseInit
 	return
 }
 
+// Info implements abci.Application. It returns the height and hash,
+// as well as the abci name and version.
+//
+// The height is the block that holds the transactions, not the apphash itself.
+func (app *BaseApp) Info(req abci.RequestInfo) abci.ResponseInfo {
+	ethInfoRes := app.EthApp.Info(req)
+
+	if big.NewInt(ethInfoRes.LastBlockHeight).Cmp(bigZero) == 0 {
+		return ethInfoRes
+	}
+
+	travisInfoRes := app.StoreApp.Info(req)
+
+	travisInfoRes.LastBlockAppHash = finalAppHash(ethInfoRes.LastBlockAppHash, travisInfoRes.LastBlockAppHash, app.StoreApp.GetDbHash(), travisInfoRes.LastBlockHeight, nil)
+	return travisInfoRes
+}
+
 // DeliverTx - ABCI
 func (app *BaseApp) DeliverTx(txBytes []byte) abci.ResponseDeliverTx {
 	tx, err := decodeTx(txBytes)
@@ -74,7 +95,7 @@ func (app *BaseApp) DeliverTx(txBytes []byte) abci.ResponseDeliverTx {
 		return errors.DeliverResult(err)
 	}
 
-	if isEthTx(tx) {
+	if utils.IsEthTx(tx) {
 		if checkedTx, ok := app.checkedTx[tx.Hash()]; ok {
 			tx = checkedTx
 		} else {
@@ -86,7 +107,7 @@ func (app *BaseApp) DeliverTx(txBytes []byte) abci.ResponseDeliverTx {
 			}
 		}
 		resp := app.EthApp.DeliverTx(tx)
-		app.logger.Debug("EthApp DeliverTx response: %v\n", resp)
+		app.logger.Debug("EthApp DeliverTx response", "resp", resp)
 		return resp
 	}
 
@@ -104,9 +125,9 @@ func (app *BaseApp) CheckTx(txBytes []byte) abci.ResponseCheckTx {
 		return errors.CheckResult(err)
 	}
 
-	if isEthTx(tx) {
+	if utils.IsEthTx(tx) {
 		resp := app.EthApp.CheckTx(tx)
-		app.logger.Debug("EthApp CheckTx response: %v\n", resp)
+		app.logger.Debug("EthApp CheckTx response", "resp", resp)
 		if resp.IsErr() {
 			return errors.CheckResult(goerr.New(resp.String()))
 		}
@@ -123,8 +144,20 @@ func (app *BaseApp) CheckTx(txBytes []byte) abci.ResponseCheckTx {
 // BeginBlock - ABCI
 func (app *BaseApp) BeginBlock(req abci.RequestBeginBlock) (res abci.ResponseBeginBlock) {
 	app.EthApp.BeginBlock(req)
-	app.AbsentValidators = req.AbsentValidators
-	app.logger.Info("BeginBlock", "absentvalidators", app.AbsentValidators)
+
+	// handle the absent validators
+	for _, i := range req.AbsentValidators {
+		app.logger.Debug("BeginBlock", "index", i)
+		if i >= int32(len(app.LastValidators)) {
+			continue
+		}
+
+		v := app.LastValidators[i]
+		app.AbsentValidators.Add(v.PubKey, app.WorkingHeight())
+	}
+	app.AbsentValidators.Clear(app.WorkingHeight())
+
+	app.logger.Info("BeginBlock", "absent_validators", app.AbsentValidators)
 	app.ByzantineValidators = req.ByzantineValidators
 
 	return abci.ResponseBeginBlock{}
@@ -134,21 +167,12 @@ func (app *BaseApp) BeginBlock(req abci.RequestBeginBlock) (res abci.ResponseBeg
 func (app *BaseApp) EndBlock(req abci.RequestEndBlock) (res abci.ResponseEndBlock) {
 	app.EthApp.EndBlock(req)
 
-	// execute tick if present
-	diff, err := tick(app.Append())
-	if err != nil {
-		panic(err)
-	}
-	app.AddValChange(diff)
-
-	// block award
 	cs := stake.GetCandidates()
 	cs.Sort()
 	validators := cs.Validators()
-	for _, i := range app.AbsentValidators {
-		validators.Remove(i)
-	}
-	stake.NewAwardCalculator(app.WorkingHeight(), validators, utils.BlockGasFee).AwardAll()
+
+	// block award
+	stake.NewAwardDistributor(app.WorkingHeight(), validators, utils.BlockGasFee, app.AbsentValidators, app.logger).DistributeAll()
 
 	// punish Byzantine validators
 	if len(app.ByzantineValidators) > 0 {
@@ -163,15 +187,37 @@ func (app *BaseApp) EndBlock(req abci.RequestEndBlock) (res abci.ResponseEndBloc
 		}
 	}
 
-	// todo punish those validators who has been absent for up to 3 hours
+	// punish the absent validators
+	for k, v := range app.AbsentValidators.Validators {
+		stake.PunishAbsentValidator(k, v)
+	}
+
+	// execute tick if present
+	diff, err := tick(app.Append())
+	if err != nil {
+		panic(err)
+	}
+	app.AddValChange(diff)
+
+	lastValidators := cs.Validators()
+	lastValidators.Sort()
+	app.LastValidators = lastValidators
+
+	// handle the pending unstake requests
+	stake.HandlePendingUnstakeRequests(app.WorkingHeight(), app.Append())
 
 	return app.StoreApp.EndBlock(req)
 }
 
 func (app *BaseApp) Commit() (res abci.ResponseCommit) {
 	app.checkedTx = make(map[common.Hash]*types.Transaction)
-	app.EthApp.Commit()
+	ethAppCommit := app.EthApp.Commit()
+
+	workingHeight := app.WorkingHeight()
+
 	res = app.StoreApp.Commit()
+	dbHash := app.StoreApp.GetDbHash()
+	res.Data = finalAppHash(ethAppCommit.Data, res.Data, dbHash, workingHeight, nil)
 	return
 }
 
@@ -195,18 +241,25 @@ func (app *BaseApp) InitState(module, key string, value interface{}) error {
 	return err
 }
 
-func isEthTx(tx *types.Transaction) bool {
-	zero := big.NewInt(0)
-	return tx.Data() == nil ||
-		tx.GasPrice().Cmp(zero) != 0 ||
-		tx.Gas().Cmp(zero) != 0 ||
-		tx.Value().Cmp(zero) != 0 ||
-		tx.To() != nil
-}
-
 // Tick - Called every block even if no transaction, process all queues,
 // validator rewards, and calculate the validator set difference
 func tick(store state.SimpleDB) (change []abci.Validator, err error) {
 	change, err = stake.UpdateValidatorSet(store)
 	return
+}
+
+func finalAppHash(ethCommitHash []byte, travisCommitHash []byte, dbHash []byte, workingHeight int64, store *state.SimpleDB) []byte {
+
+	hasher := ripemd160.New()
+	buf := new(bytes.Buffer)
+	buf.Write(ethCommitHash)
+	buf.Write(travisCommitHash)
+	buf.Write(dbHash)
+	hasher.Write(buf.Bytes())
+	hash := hasher.Sum(nil)
+
+	if store != nil {
+		// TODO: save to DB
+	}
+	return hash
 }
