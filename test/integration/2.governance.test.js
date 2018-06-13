@@ -6,7 +6,7 @@ const { Settings } = require("./constants")
 const Utils = require("./global_hooks")
 const Globals = require("./global_vars")
 
-describe.skip("Governance Test", function() {
+describe("Governance Test", function() {
   let proposalId = ""
   let balance_old, balance_new
 

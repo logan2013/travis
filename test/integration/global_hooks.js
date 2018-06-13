@@ -91,7 +91,7 @@ before("Transfer 5000 CMT to A, B, C, D from defaultAccount", function(done) {
     done()
   }
 })
-/*
+
 before("Add some fake validators if it's a single node", function() {
   logger.info(this.test.fullTitle())
   if (web3.net.peerCount == 0) {
@@ -135,5 +135,5 @@ after("Remove fake validators for single node", function() {
     })
   }
 })
-*/
+
 module.exports = Utils
